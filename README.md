@@ -44,24 +44,6 @@ The project uses four main data sources:
    - Demographics/body size: `Sex_MF`, `Sex_bin`, `BMI`, `Age`, `Height`.
    - MRI reference variables: `RF_imat_ratio_L`, `RF_imat_ratio_R`.
 
-The attached WOMAC/morphology workbook also includes engineered fields that are not simple Fiji exports, such as:
-
-```text
-Normalized_Area
-MT_adjusted
-EI_original
-EI_adjusted
-Norm_Area_H^2
-Norm_Area_H
-Norm_Area_BMI^0.67
-Norm_Area_log(area/BMI)
-Norm_Area_from_R
-MT_residual
-MT_new
-```
-
-These should be treated as preprocessed or derived variables. The simple/direct morphology measurements should be exported from Fiji first, then downstream scripts or spreadsheets can compute the derived fields.
-
 ## Batch Morphology Extraction In Fiji/ImageJ
 
 Fiji is used to massively acquire simple morphology measurements from ultrasound ROIs.
