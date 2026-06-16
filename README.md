@@ -22,6 +22,48 @@ The pipeline starts at image feature acquisition and ends with leakage-safe WOMA
 
 Patient data, Excel workbooks, images, masks, and generated outputs are intentionally ignored by Git.
 
+## Setup
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Place local data under the ignored `data/` folders, or pass custom paths using command-line arguments and environment variables.
+
+Recommended local layout:
+
+```text
+data/
+├── raw/
+│   ├── ground_truth_with_bmi_womac.xlsx
+│   ├── mri_muscle_features.xlsx
+│   ├── ultrasound_images/
+│   └── eroded_masks/
+└── processed/
+    └── ultrasound_radiomics_features_updated.xlsx
+```
+
+The main notebook uses these default relative paths:
+
+```text
+data/processed/ultrasound_radiomics_features_updated.xlsx
+data/raw/ground_truth_with_bmi_womac.xlsx
+data/raw/mri_muscle_features.xlsx
+outputs/
+```
+
+You can override them without editing the notebook:
+
+```bash
+export WOMAC_BASE_DIR=/path/to/project
+export WOMAC_US_PATH=/path/to/ultrasound_radiomics_features_updated.xlsx
+export WOMAC_GT_PATH=/path/to/ground_truth_with_bmi_womac.xlsx
+export WOMAC_MRI_PATH=/path/to/mri_muscle_features.xlsx
+export WOMAC_OUTPUT_DIR=/path/to/outputs
+```
+
 ## Data Acquisition Overview
 
 The project uses four main data sources:
@@ -43,6 +85,24 @@ The project uses four main data sources:
    - WOMAC targets: `WOMAC Pain`, `WOMAC Stiffness`, `WOMAC Function`, `Total Score`.
    - Demographics/body size: `Sex_MF`, `Sex_bin`, `BMI`, `Age`, `Height`.
    - MRI reference variables: `RF_imat_ratio_L`, `RF_imat_ratio_R`.
+
+The WOMAC/morphology workbook may also include engineered fields that are not simple Fiji exports, such as:
+
+```text
+Normalized_Area
+MT_adjusted
+EI_original
+EI_adjusted
+Norm_Area_H^2
+Norm_Area_H
+Norm_Area_BMI^0.67
+Norm_Area_log(area/BMI)
+Norm_Area_from_R
+MT_residual
+MT_new
+```
+
+These should be treated as preprocessed or derived variables. The simple/direct morphology measurements should be exported from Fiji first, then downstream scripts or spreadsheets can compute the derived fields.
 
 ## Batch Morphology Extraction In Fiji/ImageJ
 
@@ -210,17 +270,21 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Run the included script:
+Run the included script with default repo-relative folders:
 
 ```bash
 python scripts/extract_radiomics.py
 ```
 
-The current script expects:
+Or provide custom folders:
 
-```python
-image_folder = "/Users/yichun/Downloads/unannotated images"
-mask_folder = "/Users/yichun/Downloads/eroded mask"
+```bash
+python scripts/extract_radiomics.py \
+  --image-folder data/raw/ultrasound_images \
+  --mask-folder data/raw/eroded_masks \
+  --output-csv data/processed/ultrasound_radiomics_features.csv \
+  --mask-prefix mask_bw_ \
+  --label 255
 ```
 
 Mask names should start with:
@@ -246,13 +310,22 @@ UG001_L.*
 ```python
 import os
 import glob
+import argparse
 import SimpleITK as sitk
 from radiomics import featureextractor
 import pandas as pd
 import numpy as np
 
-image_folder = '/Users/yichun/Downloads/unannotated images'
-mask_folder = '/Users/yichun/Downloads/eroded mask'
+parser = argparse.ArgumentParser()
+parser.add_argument("--image-folder", default="data/raw/ultrasound_images")
+parser.add_argument("--mask-folder", default="data/raw/eroded_masks")
+parser.add_argument("--output-csv", default="data/processed/ultrasound_radiomics_features.csv")
+parser.add_argument("--mask-prefix", default="mask_bw_")
+parser.add_argument("--label", type=int, default=255)
+args = parser.parse_args()
+
+image_folder = args.image_folder
+mask_folder = args.mask_folder
 
 settings = {
     'binWidth': 25,
@@ -260,7 +333,7 @@ settings = {
     'interpolator': sitk.sitkBSpline,
     'force2D': True,
     'force2Ddimension': 0,
-    'label' : 255
+    'label' : args.label
 }
 
 extractor = featureextractor.RadiomicsFeatureExtractor(**settings)
@@ -269,15 +342,15 @@ extractor.enableAllFeatures()
 feature_list = []
 print(f"Scanning mask folder: {mask_folder} ...")
 
-mask_files = [f for f in os.listdir(mask_folder) if f.startswith('mask_bw_')]
+mask_files = [f for f in os.listdir(mask_folder) if f.startswith(args.mask_prefix)]
 
 if not mask_files:
-    print("Warning: no mask files beginning with 'mask_bw_' were found.")
+    print(f"Warning: no mask files beginning with '{args.mask_prefix}' were found.")
 
 for mask_filename in mask_files:
     try:
         mask_name_no_ext = os.path.splitext(mask_filename)[0]
-        target_id = mask_name_no_ext.replace('mask_bw_', '')
+        target_id = mask_name_no_ext.replace(args.mask_prefix, '', 1)
         search_pattern = os.path.join(image_folder, f"{target_id}.*")
         potential_images = glob.glob(search_pattern)
 
@@ -314,10 +387,10 @@ for mask_filename in mask_files:
 
 if feature_list:
     df = pd.DataFrame(feature_list)
-    output_csv = 'ultrasound_radiomics_features.csv'
-    df.to_csv(output_csv, index=False)
+    os.makedirs(os.path.dirname(args.output_csv), exist_ok=True)
+    df.to_csv(args.output_csv, index=False)
     print(f"Successfully extracted features for {len(df)} patients.")
-    print(f"Saved to: {output_csv}")
+    print(f"Saved to: {args.output_csv}")
 else:
     print("No features extracted. Check paths and filename rules.")
 ```
@@ -459,4 +532,3 @@ mri_matching_diagnostics.csv
 - Use the same ROI masks for morphology and radiomics where possible.
 - Treat MRI variables as external references, not model predictors.
 - Use patient-grouped splits whenever evaluating model performance or cross-fitted associations.
-
