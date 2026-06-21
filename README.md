@@ -4,24 +4,6 @@ This repository contains a reproducible workflow for studying associations betwe
 
 The pipeline starts at image feature acquisition and ends with leakage-safe WOMAC severity modeling plus side-specific KPCA correlation against MRI reference data.
 
-## Repository Contents
-
-```text
-.
-├── womac_imaging_ml_pipeline_colab.ipynb   # Main Google Colab notebook
-├── womac_imaging_ml_pipeline_colab.py      # Python export of the notebook
-├── scripts/
-│   └── extract_radiomics.py                # PyRadiomics texture extraction script
-├── data/
-│   ├── raw/                                # Local raw inputs, not committed
-│   └── processed/                          # Local processed tables, not committed
-├── outputs/                                # Local outputs, not committed
-├── requirements.txt
-└── README.md
-```
-
-Patient data, Excel workbooks, images, masks, and generated outputs are intentionally ignored by Git.
-
 ## Setup
 
 Install dependencies:
