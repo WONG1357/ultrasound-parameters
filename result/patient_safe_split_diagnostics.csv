@@ -1,9 +1,0 @@
-cohort,target,train_rows,test_rows,train_patients,test_patients,patient_overlap,train_class_counts,test_class_counts
-imputed_all_rows,Total,142,46,57,19,0,"{'Mild': 93, 'Medium': 25, 'Intensed': 13, 'Severe': 11}","{'Mild': 37, 'Medium': 5, 'Severe': 3, 'Intensed': 1}"
-imputed_all_rows,Pain,142,46,57,19,0,"{'Mild': 119, 'Medium': 15, 'Severe': 7, 'Intensed': 1}","{'Mild': 42, 'Medium': 4}"
-imputed_all_rows,Function,142,46,57,19,0,"{'Mild': 110, 'Medium': 19, 'Severe': 8, 'Intensed': 5}","{'Mild': 37, 'Medium': 8, 'Intensed': 1}"
-imputed_all_rows,PainFunction,142,46,57,19,0,"{'Mild': 101, 'Medium': 23, 'Severe': 11, 'Intensed': 7}","{'Mild': 37, 'Medium': 5, 'Severe': 3, 'Intensed': 1}"
-mri_complete_cases,Total,22,6,13,5,0,"{'Mild': 9, 'Intensed': 6, 'Medium': 4, 'Severe': 3}","{'Mild': 3, 'Intensed': 1, 'Medium': 1, 'Severe': 1}"
-mri_complete_cases,Pain,22,6,13,5,0,"{'Mild': 10, 'Medium': 7, 'Severe': 5}","{'Mild': 3, 'Medium': 2, 'Severe': 1}"
-mri_complete_cases,Function,22,6,13,5,0,"{'Mild': 13, 'Medium': 5, 'Severe': 4}","{'Mild': 3, 'Medium': 2, 'Severe': 1}"
-mri_complete_cases,PainFunction,22,6,13,5,0,"{'Mild': 11, 'Severe': 7, 'Medium': 3, 'Intensed': 1}","{'Mild': 3, 'Severe': 2, 'Medium': 1}"
