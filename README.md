@@ -443,19 +443,9 @@ The notebook supports the merged long-format equivalent:
 MRI_RF_imat_ratio
 ```
 
-Two MRI correlation analyses are implemented.
+One MRI correlation analyses are implemented.
 
-### 1. Strict Test-Only Analysis
-
-Output:
-
-```text
-selected5_strict_test_only_kpca_mri_correlations.csv
-```
-
-This uses only the held-out test split. It is methodologically strict, but the MRI file has 21 subjects, so sample sizes can be small.
-
-### 2. Cross-Fitted MRI-Complete Analysis
+### 1. Cross-Fitted MRI-Complete Analysis
 
 Outputs:
 
