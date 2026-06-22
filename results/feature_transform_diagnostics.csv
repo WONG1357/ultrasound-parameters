@@ -1,9 +1,0 @@
-cohort,target,morphology,radiomics
-imputed_all_rows,Total,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
-imputed_all_rows,Pain,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
-imputed_all_rows,Function,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
-imputed_all_rows,PainFunction,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
-mri_complete_cases,Total,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
-mri_complete_cases,Pain,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
-mri_complete_cases,Function,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
-mri_complete_cases,PainFunction,"{'input_cols': 25, 'output_cols': 10}","{'input_cols': 102, 'output_cols': 10}"
