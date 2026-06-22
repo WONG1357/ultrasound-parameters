@@ -74,9 +74,10 @@ REQUIRED_OUTPUT_FILENAMES = {
     "classification_reports.csv",
     "patient_safe_split_diagnostics.csv",
     "feature_transform_diagnostics.csv",
-    "selectedall_strict_test_only_kpca_mri_correlations.csv",
-    "selectedall_cross_fitted_kpca_mri_correlations.csv",
-    "selectedall_cross_fitted_kpca_scores.csv",
+    "two_case_strict_test_only_kpca_mri_correlations.csv",
+    "two_case_cross_fitted_kpca_mri_correlations.csv",
+    "two_case_cross_fitted_kpca_scores.csv",
+    "two_case_rf_feature_selection_diagnostics.csv",
     "mri_matching_diagnostics.csv",
 }
 
@@ -211,6 +212,10 @@ us = pd.read_excel(US_PATH)
 gt = pd.read_excel(GT_PATH)
 mri_wide = pd.read_excel(MRI_PATH)
 
+us.columns = [str(c).strip() for c in us.columns]
+gt.columns = [str(c).strip() for c in gt.columns]
+mri_wide.columns = [str(c).strip() for c in mri_wide.columns]
+
 print("Ultrasound shape:", us.shape)
 print("Ground truth shape:", gt.shape)
 print("MRI wide shape:", mri_wide.shape)
@@ -256,9 +261,10 @@ def mri_wide_to_long(df):
                     continue
                 if str(col).endswith(suffix):
                     base_name = str(col)[: -len(suffix)]
-                    if not base_name.startswith("RF"):
+                    normalized_base = re.sub(r"[^a-z0-9]+", "", base_name.lower())
+                    if not normalized_base.startswith("rf"):
                         continue
-                    feature_name = "MRI_" + base_name
+                    feature_name = "MRI_RF_imat_ratio" if normalized_base == "rfimatratio" else "MRI_" + base_name
                     row[feature_name] = r[col]
             rows.append(row)
 
@@ -421,6 +427,24 @@ mri_match_df = pd.DataFrame(mri_match_trials).sort_values(
 )
 best_mri_strategy = mri_match_df.iloc[0]["strategy"]
 data = mri_merged_by_strategy[best_mri_strategy].copy()
+
+# Recreate explicit same-side MRI reference columns from the side-indexed long column.
+imat_ratio_candidates = [
+    c for c in mri_feature_cols
+    if re.sub(r"[^a-z0-9]+", "", str(c).lower()) == "mrirfimatratio"
+]
+if len(imat_ratio_candidates) != 1:
+    available_imat_cols = [c for c in data.columns if "imat" in str(c).lower()]
+    raise KeyError(
+        "Expected the merged MRI column MRI_RF_imat_ratio derived from "
+        "RF_imat_ratio_L and RF_imat_ratio_R, but it was not found uniquely. "
+        f"Available IMAT-like columns: {available_imat_cols}"
+    )
+
+MRI_IMAT_RATIO_LONG_COL = imat_ratio_candidates[0]
+mri_imat_values = pd.to_numeric(data[MRI_IMAT_RATIO_LONG_COL], errors="coerce")
+data["RF_imat_ratio_L"] = mri_imat_values.where(data["side_norm"].eq("Left"))
+data["RF_imat_ratio_R"] = mri_imat_values.where(data["side_norm"].eq("Right"))
 
 print("Selected MRI matching strategy:", best_mri_strategy)
 print("MRI matched rows:", int(data[mri_feature_cols].notna().any(axis=1).sum()), "/", len(data))
@@ -848,7 +872,7 @@ save_df(split_diag_df, "patient_safe_split_diagnostics.csv")
 save_df(feature_diag_df, "feature_transform_diagnostics.csv")
 
 # %% [markdown]
-# ## Leakage-free all-ultrasound side-specific KPCA and MRI correlation
+# ## Leakage-free two-case RF-selected ultrasound KPCA and MRI correlation
 
 # %%
 def unique_existing(cols):
@@ -879,6 +903,58 @@ def find_mri_imat_ratio_reference(df, side):
     side_suffix = "_L" if side == "Left" else "_R"
     exact_wide = f"RF_imat_ratio{side_suffix}"
     return exact_wide if exact_wide in df.columns else None
+
+
+def rf_select_top_features(train_df, y_train, candidate_cols, top_n=5):
+    candidate_cols = [c for c in unique_existing(candidate_cols) if c in train_df.columns]
+    X_train = train_df[candidate_cols].apply(pd.to_numeric, errors="coerce")
+    nonempty_cols = [c for c in candidate_cols if X_train[c].notna().any()]
+    diagnostics = {
+        "candidate_features": int(len(candidate_cols)),
+        "nonempty_train_features": int(len(nonempty_cols)),
+        "variance_surviving_features": 0,
+        "correlation_surviving_features": 0,
+        "selected_feature_count": 0,
+    }
+    if not nonempty_cols:
+        return [], {}, diagnostics
+
+    imputer = SimpleImputer(strategy="median")
+    variance = VarianceThreshold(threshold=0.0)
+    corr = CorrelationFilter(threshold=0.95)
+    scaler = MinMaxScaler()
+
+    X_train_imp = imputer.fit_transform(X_train[nonempty_cols])
+    try:
+        X_train_var = variance.fit_transform(X_train_imp)
+    except ValueError:
+        return [], {}, diagnostics
+
+    var_names = np.array(nonempty_cols, dtype=object)[variance.get_support()]
+    diagnostics["variance_surviving_features"] = int(len(var_names))
+    if len(var_names) == 0:
+        return [], {}, diagnostics
+
+    X_train_corr = corr.fit_transform(pd.DataFrame(X_train_var, columns=var_names, index=train_df.index))
+    corr_names = np.array(var_names, dtype=object)[corr.keep_indices_]
+    diagnostics["correlation_surviving_features"] = int(len(corr_names))
+    if len(corr_names) == 0:
+        return [], {}, diagnostics
+
+    X_train_scaled = scaler.fit_transform(X_train_corr)
+    rf = RandomForestClassifier(
+        n_estimators=N_TREES,
+        random_state=RANDOM_STATE,
+        class_weight="balanced",
+        n_jobs=-1,
+    )
+    rf.fit(X_train_scaled, y_train)
+
+    importances = pd.Series(rf.feature_importances_, index=corr_names).sort_values(ascending=False)
+    selected = importances.head(min(top_n, len(importances))).index.tolist()
+    selected_importances = importances.loc[selected].to_dict()
+    diagnostics["selected_feature_count"] = int(len(selected))
+    return selected, selected_importances, diagnostics
 
 
 def fit_side_kpca(train_side, test_side, ultrasound_features):
@@ -929,7 +1005,9 @@ def fit_side_kpca(train_side, test_side, ultrasound_features):
     return pd.Series(train_scores, index=train_side.index), pd.Series(test_scores, index=test_side.index)
 
 
-candidate_ultrasound_cols = unique_existing(morphology_cols + radiomics_cols)
+candidate_radiomics_cols = unique_existing(radiomics_cols)
+candidate_morphology_cols = unique_existing(morphology_cols)
+rf_selection_diagnostics = []
 
 
 def correlate_score_frame(score_frame, analysis_type, sample_size_note):
@@ -948,6 +1026,7 @@ def correlate_score_frame(score_frame, analysis_type, sample_size_note):
                 "cohort": cohort_name,
                 "target": target,
                 "side": side,
+                "kpca_case": grp["kpca_case"].iloc[0],
                 "kpca_variable": kpca_variable,
                 "mri_variable": mri_variable,
                 "method": "spearman",
@@ -957,6 +1036,12 @@ def correlate_score_frame(score_frame, analysis_type, sample_size_note):
                 "sample_size_note": sample_size_note,
                 "ultrasound_features_json": grp["ultrasound_features_json"].dropna().iloc[0]
                 if grp["ultrasound_features_json"].notna().any()
+                else "[]",
+                "radiomics_features_json": grp["radiomics_features_json"].dropna().iloc[0]
+                if grp["radiomics_features_json"].notna().any()
+                else "[]",
+                "morphology_features_json": grp["morphology_features_json"].dropna().iloc[0]
+                if grp["morphology_features_json"].notna().any()
                 else "[]",
             }
         )
@@ -972,7 +1057,7 @@ def correlate_score_frame(score_frame, analysis_type, sample_size_note):
 strict_score_frames = []
 strict_cohort_filter = data[mri_cols].notna().all(axis=1) if mri_cols else pd.Series(False, index=data.index)
 strict_cohort_data = data.loc[strict_cohort_filter].copy()
-print("\nSelectedAll strict_test_only cohort: mri_complete_cases rows:", len(strict_cohort_data))
+print("\nTwo-case strict_test_only cohort: mri_complete_cases rows:", len(strict_cohort_data))
 
 for target in TARGETS:
     target_col = f"{target}_Severity"
@@ -989,8 +1074,42 @@ for target in TARGETS:
     train_idx, test_idx = next(splitter.split(df_t, df_t[target_col], groups=groups))
     train_df = df_t.iloc[train_idx].copy()
     test_df = df_t.iloc[test_idx].copy()
+    y_train = train_df[target_col].astype(str)
 
-    for side, score_col in [("Left", "SelectedAll_KPCA_L"), ("Right", "SelectedAll_KPCA_R")]:
+    selected_radiomics, radiomics_importances, radiomics_diag = rf_select_top_features(
+        train_df, y_train, candidate_radiomics_cols, top_n=5
+    )
+    selected_morphology, morphology_importances, morphology_diag = rf_select_top_features(
+        train_df, y_train, candidate_morphology_cols, top_n=5
+    )
+    for feature_type, selected, importances, diagnostics in [
+        ("radiomics", selected_radiomics, radiomics_importances, radiomics_diag),
+        ("morphology", selected_morphology, morphology_importances, morphology_diag),
+    ]:
+        rf_selection_diagnostics.append(
+            {
+                "analysis_type": "strict_test_only",
+                "target": target,
+                "fold": "single_group_shuffle_split",
+                "feature_type": feature_type,
+                **diagnostics,
+                "selected_features_json": json.dumps(selected),
+                "selected_feature_importances_json": json.dumps(importances),
+            }
+        )
+
+    kpca_cases = [("Case1_RadiomicsTop5", selected_radiomics, selected_radiomics, [])]
+    if selected_radiomics and selected_morphology:
+        kpca_cases.append(
+            (
+                "Case2_RadiomicsTop5_MorphologyTop5",
+                unique_existing(selected_radiomics + selected_morphology),
+                selected_radiomics,
+                selected_morphology,
+            )
+        )
+
+    for side in ["Left", "Right"]:
         mri_col = find_mri_imat_ratio_reference(df_t, side)
         if not mri_col:
             print(f"Skipping strict_test_only / {target} / {side}: no MRI IMAT ratio reference column")
@@ -998,29 +1117,38 @@ for target in TARGETS:
 
         train_side = train_df.loc[train_df["side_norm"].map(normalize_side).eq(side)].copy()
         test_side = test_df.loc[test_df["side_norm"].map(normalize_side).eq(side)].copy()
-        _, test_scores = fit_side_kpca(train_side, test_side, candidate_ultrasound_cols)
-        if test_scores is None:
-            print(f"Skipping strict_test_only / {target} / {side}: not enough side-specific ultrasound features")
-            continue
+        side_suffix = "L" if side == "Left" else "R"
 
-        strict_score_frames.append(
-            pd.DataFrame(
-                {
-                    "analysis_type": "strict_test_only",
-                    "cohort": "mri_complete_cases",
-                    "target": target,
-                    "fold": "single_group_shuffle_split",
-                    "side": side,
-                    "patient_group": test_side["patient_group"].astype(str),
-                    "dataset_split": "test",
-                    "kpca_variable": score_col,
-                    "kpca_score": test_scores,
-                    "mri_variable": mri_col,
-                    "mri_value": pd.to_numeric(test_side[mri_col], errors="coerce"),
-                    "ultrasound_features_json": json.dumps(candidate_ultrasound_cols),
-                }
+        for case_name, case_features, case_radiomics, case_morphology in kpca_cases:
+            if not case_features:
+                print(f"Skipping strict_test_only / {target} / {side} / {case_name}: no selected features")
+                continue
+            _, test_scores = fit_side_kpca(train_side, test_side, case_features)
+            if test_scores is None:
+                print(f"Skipping strict_test_only / {target} / {side} / {case_name}: KPCA could not be fitted")
+                continue
+
+            strict_score_frames.append(
+                pd.DataFrame(
+                    {
+                        "analysis_type": "strict_test_only",
+                        "cohort": "mri_complete_cases",
+                        "target": target,
+                        "fold": "single_group_shuffle_split",
+                        "side": side,
+                        "patient_group": test_side["patient_group"].astype(str),
+                        "dataset_split": "test",
+                        "kpca_case": case_name,
+                        "kpca_variable": f"{case_name}_KPCA_{side_suffix}",
+                        "kpca_score": test_scores,
+                        "mri_variable": mri_col,
+                        "mri_value": pd.to_numeric(test_side[mri_col], errors="coerce"),
+                        "ultrasound_features_json": json.dumps(case_features),
+                        "radiomics_features_json": json.dumps(case_radiomics),
+                        "morphology_features_json": json.dumps(case_morphology),
+                    }
+                )
             )
-        )
 
 strict_scores_df = pd.concat(strict_score_frames, ignore_index=True) if strict_score_frames else pd.DataFrame()
 strict_corr_df = correlate_score_frame(
@@ -1034,7 +1162,7 @@ strict_corr_df = correlate_score_frame(
 # every correlation uses out-of-fold KPCA scores for held-out patients only.
 cross_fitted_score_frames = []
 cross_cohort_data = data.loc[strict_cohort_filter].copy()
-print("\nSelectedAll cross_fitted_mri_complete cohort rows:", len(cross_cohort_data))
+print("\nTwo-case cross_fitted_mri_complete cohort rows:", len(cross_cohort_data))
 
 for target in TARGETS:
     target_col = f"{target}_Severity"
@@ -1060,7 +1188,40 @@ for target in TARGETS:
             print(f"Skipping cross_fitted_mri_complete / {target} / fold {fold_idx}: training fold has one class")
             continue
 
-        for side, score_col in [("Left", "SelectedAll_KPCA_L"), ("Right", "SelectedAll_KPCA_R")]:
+        selected_radiomics, radiomics_importances, radiomics_diag = rf_select_top_features(
+            train_df, y_train, candidate_radiomics_cols, top_n=5
+        )
+        selected_morphology, morphology_importances, morphology_diag = rf_select_top_features(
+            train_df, y_train, candidate_morphology_cols, top_n=5
+        )
+        for feature_type, selected, importances, diagnostics in [
+            ("radiomics", selected_radiomics, radiomics_importances, radiomics_diag),
+            ("morphology", selected_morphology, morphology_importances, morphology_diag),
+        ]:
+            rf_selection_diagnostics.append(
+                {
+                    "analysis_type": "cross_fitted_mri_complete",
+                    "target": target,
+                    "fold": fold_idx,
+                    "feature_type": feature_type,
+                    **diagnostics,
+                    "selected_features_json": json.dumps(selected),
+                    "selected_feature_importances_json": json.dumps(importances),
+                }
+            )
+
+        kpca_cases = [("Case1_RadiomicsTop5", selected_radiomics, selected_radiomics, [])]
+        if selected_radiomics and selected_morphology:
+            kpca_cases.append(
+                (
+                    "Case2_RadiomicsTop5_MorphologyTop5",
+                    unique_existing(selected_radiomics + selected_morphology),
+                    selected_radiomics,
+                    selected_morphology,
+                )
+            )
+
+        for side in ["Left", "Right"]:
             mri_col = find_mri_imat_ratio_reference(df_t, side)
             if not mri_col:
                 print(f"Skipping cross_fitted_mri_complete / {target} / {side}: no MRI IMAT ratio reference column")
@@ -1068,29 +1229,44 @@ for target in TARGETS:
 
             train_side = train_df.loc[train_df["side_norm"].map(normalize_side).eq(side)].copy()
             heldout_side = heldout_df.loc[heldout_df["side_norm"].map(normalize_side).eq(side)].copy()
-            _, heldout_scores = fit_side_kpca(train_side, heldout_side, candidate_ultrasound_cols)
-            if heldout_scores is None:
-                print(f"Skipping cross_fitted_mri_complete / {target} / {side} / fold {fold_idx}: not enough side-specific ultrasound features")
-                continue
+            side_suffix = "L" if side == "Left" else "R"
 
-            cross_fitted_score_frames.append(
-                pd.DataFrame(
-                    {
-                        "analysis_type": "cross_fitted_mri_complete",
-                        "cohort": "mri_complete_cases",
-                        "target": target,
-                        "fold": fold_idx,
-                        "side": side,
-                        "patient_group": heldout_side["patient_group"].astype(str),
-                        "dataset_split": "out_of_fold",
-                        "kpca_variable": score_col,
-                        "kpca_score": heldout_scores,
-                        "mri_variable": mri_col,
-                        "mri_value": pd.to_numeric(heldout_side[mri_col], errors="coerce"),
-                        "ultrasound_features_json": json.dumps(candidate_ultrasound_cols),
-                    }
+            for case_name, case_features, case_radiomics, case_morphology in kpca_cases:
+                if not case_features:
+                    print(
+                        f"Skipping cross_fitted_mri_complete / {target} / {side} / "
+                        f"fold {fold_idx} / {case_name}: no selected features"
+                    )
+                    continue
+                _, heldout_scores = fit_side_kpca(train_side, heldout_side, case_features)
+                if heldout_scores is None:
+                    print(
+                        f"Skipping cross_fitted_mri_complete / {target} / {side} / "
+                        f"fold {fold_idx} / {case_name}: KPCA could not be fitted"
+                    )
+                    continue
+
+                cross_fitted_score_frames.append(
+                    pd.DataFrame(
+                        {
+                            "analysis_type": "cross_fitted_mri_complete",
+                            "cohort": "mri_complete_cases",
+                            "target": target,
+                            "fold": fold_idx,
+                            "side": side,
+                            "patient_group": heldout_side["patient_group"].astype(str),
+                            "dataset_split": "out_of_fold",
+                            "kpca_case": case_name,
+                            "kpca_variable": f"{case_name}_KPCA_{side_suffix}",
+                            "kpca_score": heldout_scores,
+                            "mri_variable": mri_col,
+                            "mri_value": pd.to_numeric(heldout_side[mri_col], errors="coerce"),
+                            "ultrasound_features_json": json.dumps(case_features),
+                            "radiomics_features_json": json.dumps(case_radiomics),
+                            "morphology_features_json": json.dumps(case_morphology),
+                        }
+                    )
                 )
-            )
 
 cross_fitted_scores_df = pd.concat(cross_fitted_score_frames, ignore_index=True) if cross_fitted_score_frames else pd.DataFrame()
 cross_fitted_corr_df = correlate_score_frame(
@@ -1099,12 +1275,15 @@ cross_fitted_corr_df = correlate_score_frame(
     "Main MRI-complete analysis; KPCA scores are out-of-fold for held-out patients and use all matched MRI-complete side rows.",
 ) if not cross_fitted_scores_df.empty else pd.DataFrame()
 
+rf_selection_diagnostics_df = pd.DataFrame(rf_selection_diagnostics)
+
 display(cross_fitted_corr_df)
 display(strict_corr_df)
 
-save_df(strict_corr_df, "selectedall_strict_test_only_kpca_mri_correlations.csv")
-save_df(cross_fitted_corr_df, "selectedall_cross_fitted_kpca_mri_correlations.csv")
-save_df(cross_fitted_scores_df, "selectedall_cross_fitted_kpca_scores.csv")
+save_df(strict_corr_df, "two_case_strict_test_only_kpca_mri_correlations.csv")
+save_df(cross_fitted_corr_df, "two_case_cross_fitted_kpca_mri_correlations.csv")
+save_df(cross_fitted_scores_df, "two_case_cross_fitted_kpca_scores.csv")
+save_df(rf_selection_diagnostics_df, "two_case_rf_feature_selection_diagnostics.csv")
 cleanup_nonrequired_outputs()
 
 # %% [markdown]
